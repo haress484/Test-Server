@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Премиум-эмодзи</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/bodymovin/5.12.2/lottie.min.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --text: var(--tg-theme-text-color, #111111);
+    --hint: var(--tg-theme-hint-color, #7a7a7a);
+    --surface: var(--tg-theme-secondary-bg-color, #f2f2f5);
+    --accent: var(--tg-theme-button-color, #2f7ff0);
+    --accent-text: var(--tg-theme-button-text-color, #ffffff);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 16px;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.sub { margin: 0 0 16px; color: var(--hint); }
+
+  .row { display: flex; gap: 8px; margin-bottom: 16px; }
+  input {
+    flex: 1;
+    min-width: 0;
+    padding: 10px 12px;
+    border: 1px solid var(--surface);
+    border-radius: 10px;
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+  }
+  button {
+    padding: 10px 16px;
+    border: 0;
+    border-radius: 10px;
+    background: var(--accent);
+    color: var(--accent-text);
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); gap: 10px; }
+  .cell {
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    padding: 12px 6px;
+    background: var(--surface);
+    border-radius: 12px;
+  }
+  .emoji { width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; }
+  .emoji img, .emoji video, .emoji svg { width: 100%; height: 100%; }
+  .emoji.err { color: var(--hint); font-size: 22px; }
+  .id { font-size: 10px; color: var(--hint); word-break: break-all; text-align: center; }
+
+  .inline { margin-top: 24px; }
+  .inline h2 { font-size: 16px; margin: 0 0 8px; }
+  .line { background: var(--surface); padding: 12px; border-radius: 12px; font-size: 18px; }
+  .inline-emoji { display: inline-block; width: 1.3em; height: 1.3em; vertical-align: -0.25em; }
+  .inline-emoji img, .inline-emoji video, .inline-emoji svg { width: 100%; height: 100%; }
+
+  .empty { color: var(--hint); padding: 8px 0; }
+  .note { color: var(--hint); font-size: 13px; margin: 0 0 8px; }
+  #tokenBox { margin-bottom: 16px; }
+  #log { margin-top: 16px; font-size: 12px; color: var(--hint); white-space: pre-wrap; word-break: break-all; }
+</style>
+</head>
+<body>
+  <h1>Премиум-эмодзи</h1>
+  <p class="sub">Введи ID через запятую или пришли боту сообщение с эмодзи.</p>
+
+  <div id="tokenBox" hidden>
+    <p class="note">Токен бота не пришёл из ссылки. Вставь его один раз, он сохранится на этом устройстве.</p>
+    <div class="row">
+      <input id="token" placeholder="123456:ABC...">
+      <button id="saveToken">Сохранить</button>
+    </div>
+  </div>
+
+  <div class="row">
+    <input id="ids" placeholder="5368324170671202286, 5312016608254762256" inputmode="numeric">
+    <button id="go">Показать</button>
+  </div>
+
+  <div id="grid" class="grid"></div>
+  <div id="empty" class="empty" hidden>Пока нет ID для показа.</div>
+
+  <div class="inline" id="inlineBox" hidden>
+    <h2>Внутри текста</h2>
+    <div class="line" id="line"></div>
+  </div>
+
+  <div id="log"></div>
+
+<script>
+const tg = window.Telegram && Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+
+const logEl = document.getElementById('log');
+function log(msg) { logEl.textContent += msg + '\n'; }
+
+// ---- токен: из hash (#t=...), иначе из localStorage ----
+let TOKEN = '';
+try {
+  const h = new URLSearchParams(location.hash.replace(/^#/, ''));
+  TOKEN = h.get('t') || '';
+  if (TOKEN) localStorage.setItem('bot_token', TOKEN);
+  else TOKEN = localStorage.getItem('bot_token') || '';
+} catch (e) {}
+
+const API = () => `https://api.telegram.org/bot${TOKEN}`;
+const FILE = () => `https://api.telegram.org/file/bot${TOKEN}`;
+
+// ---- загрузка файла эмодзи (с кэшем, чтобы не качать дважды) ----
+const cache = new Map();
+
+function loadEmoji(id) {
+  if (!cache.has(id)) {
+    cache.set(id, (async () => {
+      const r = await (await fetch(`${API()}/getCustomEmojiStickers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ custom_emoji_ids: [id] }),
+      })).json();
+      const s = r.result && r.result[0];
+      if (!s) throw new Error('getCustomEmojiStickers: ' + (r.description || 'пустой ответ'));
+
+      const f = await (await fetch(`${API()}/getFile?file_id=${s.file_id}`)).json();
+      if (!f.ok) throw new Error('getFile: ' + f.description);
+
+      const file = await fetch(`${FILE()}/${f.result.file_path}`);
+      if (!file.ok) throw new Error('download: ' + file.status);
+
+      const type = s.is_video ? 'video' : s.is_animated ? 'tgs' : 'image';
+      return { type, buf: await file.arrayBuffer() };
+    })());
+  }
+  return cache.get(id);
+}
+
+async function mountEmoji(el, id) {
+  try {
+    const { type, buf } = await loadEmoji(id);
+
+    if (type === 'image') {
+      const img = document.createElement('img');
+      img.src = URL.createObjectURL(new Blob([buf], { type: 'image/webp' }));
+      img.alt = '';
+      el.replaceChildren(img);
+    } else if (type === 'video') {
+      const v = document.createElement('video');
+      v.src = URL.createObjectURL(new Blob([buf], { type: 'video/webm' }));
+      v.autoplay = v.loop = v.muted = v.playsInline = true;
+      el.replaceChildren(v);
+      v.play().catch(() => {});
+    } else {
+      // .tgs = gzip-Lottie
+      const stream = new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip'));
+      const data = await new Response(stream).json();
+      el.replaceChildren();
+      lottie.loadAnimation({
+        container: el, renderer: 'svg', loop: true, autoplay: true, animationData: data,
+      });
+    }
+  } catch (e) {
+    el.classList.add('err');
+    el.textContent = '?';
+    log(`ID ${id}: ${e.message}`);
+  }
+}
+
+function parseIds(str) {
+  return [...new Set(str.split(/[\s,;]+/).filter(s => /^\d+$/.test(s)))];
+}
+
+function render(ids) {
+  const grid = document.getElementById('grid');
+  const line = document.getElementById('line');
+  grid.replaceChildren();
+  line.replaceChildren();
+  logEl.textContent = '';
+
+  document.getElementById('empty').hidden = ids.length > 0;
+  document.getElementById('inlineBox').hidden = ids.length === 0;
+
+  ids.forEach(id => {
+    const cell = document.createElement('div');
+    cell.className = 'cell';
+    const box = document.createElement('div');
+    box.className = 'emoji';
+    const label = document.createElement('div');
+    label.className = 'id';
+    label.textContent = id;
+    cell.append(box, label);
+    grid.append(cell);
+    mountEmoji(box, id);
+  });
+
+  // Демо: те же эмодзи внутри строки текста
+  line.append('Привет ');
+  ids.forEach(id => {
+    const span = document.createElement('span');
+    span.className = 'inline-emoji';
+    line.append(span, ' ');
+    mountEmoji(span, id);
+  });
+  line.append('вот так они выглядят в тексте');
+}
+
+document.getElementById('go').addEventListener('click', () => {
+  render(parseIds(document.getElementById('ids').value));
+});
+
+document.getElementById('saveToken').addEventListener('click', () => {
+  TOKEN = document.getElementById('token').value.trim();
+  try { localStorage.setItem('bot_token', TOKEN); } catch (e) {}
+  document.getElementById('tokenBox').hidden = !!TOKEN;
+  cache.clear();
+  render(parseIds(document.getElementById('ids').value));
+});
+
+// ---- старт ----
+document.getElementById('tokenBox').hidden = !!TOKEN;
+const fromUrl = parseIds(new URLSearchParams(location.search).get('ids') || '');
+document.getElementById('ids').value = fromUrl.join(', ');
+render(fromUrl);
+</script>
+</body>
+</html>
