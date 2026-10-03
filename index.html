@@ -66,22 +66,12 @@
   .inline-emoji img, .inline-emoji video, .inline-emoji svg { width: 100%; height: 100%; }
 
   .empty { color: var(--hint); padding: 8px 0; }
-  .note { color: var(--hint); font-size: 13px; margin: 0 0 8px; }
-  #tokenBox { margin-bottom: 16px; }
   #log { margin-top: 16px; font-size: 12px; color: var(--hint); white-space: pre-wrap; word-break: break-all; }
 </style>
 </head>
 <body>
   <h1>Премиум-эмодзи</h1>
   <p class="sub">Введи ID через запятую или пришли боту сообщение с эмодзи.</p>
-
-  <div id="tokenBox" hidden>
-    <p class="note">Токен бота не пришёл из ссылки. Вставь его один раз, он сохранится на этом устройстве.</p>
-    <div class="row">
-      <input id="token" placeholder="123456:ABC...">
-      <button id="saveToken">Сохранить</button>
-    </div>
-  </div>
 
   <div class="row">
     <input id="ids" placeholder="5368324170671202286, 5312016608254762256" inputmode="numeric">
@@ -105,50 +95,15 @@ if (tg) { tg.ready(); tg.expand(); }
 const logEl = document.getElementById('log');
 function log(msg) { logEl.textContent += msg + '\n'; }
 
-// ---- токен: из hash (#t=...), иначе из localStorage ----
-let TOKEN = '';
-try {
-  const h = new URLSearchParams(location.hash.replace(/^#/, ''));
-  TOKEN = h.get('t') || '';
-  if (TOKEN) localStorage.setItem('bot_token', TOKEN);
-  else TOKEN = localStorage.getItem('bot_token') || '';
-} catch (e) {}
-
-const API = () => `https://api.telegram.org/bot${TOKEN}`;
-const FILE = () => `https://api.telegram.org/file/bot${TOKEN}`;
-
-// ---- загрузка файла эмодзи (с кэшем, чтобы не качать дважды) ----
+// ---- загрузка файла эмодзи с нашего сервера (с кэшем) ----
 const cache = new Map();
-
-// fetch с подписью шага, чтобы было видно, где именно обрыв
-async function step(name, url) {
-  try { return await fetch(url); }
-  catch (e) { throw new Error(`${name}: ${e.message}`); }
-}
 
 function loadEmoji(id) {
   if (!cache.has(id)) {
     cache.set(id, (async () => {
-      // GET без заголовков = простой запрос, браузер не шлёт preflight
-      const ids = encodeURIComponent(JSON.stringify([id]));
-      const r = await (await step('getCustomEmojiStickers',
-        `${API()}/getCustomEmojiStickers?custom_emoji_ids=${ids}`)).json();
-      const s = r.result && r.result[0];
-      if (!s) throw new Error('getCustomEmojiStickers: ' + (r.description || 'пустой ответ'));
-
-      const f = await (await step('getFile',
-        `${API()}/getFile?file_id=${encodeURIComponent(s.file_id)}`)).json();
-      if (!f.ok) throw new Error('getFile: ' + f.description);
-
-      const url = `${FILE()}/${f.result.file_path}`;
-      const type = s.is_video ? 'video' : s.is_animated ? 'tgs' : 'image';
-
-      // webp и webm показываем по прямой ссылке (CORS не нужен), tgs нужно скачать
-      if (type !== 'tgs') return { type, url };
-
-      const file = await step('download', url);
-      if (!file.ok) throw new Error('download: ' + file.status);
-      return { type, url, buf: await file.arrayBuffer() };
+      const r = await fetch(`/emoji/${encodeURIComponent(id)}`);
+      if (!r.ok) throw new Error('сервер вернул ' + r.status);
+      return { ct: r.headers.get('Content-Type') || '', buf: await r.arrayBuffer() };
     })());
   }
   return cache.get(id);
@@ -156,17 +111,16 @@ function loadEmoji(id) {
 
 async function mountEmoji(el, id) {
   try {
-    const { type, url, buf } = await loadEmoji(id);
+    const { ct, buf } = await loadEmoji(id);
 
-    if (type === 'image') {
+    if (ct.startsWith('image/')) {
       const img = document.createElement('img');
-      img.src = url;
+      img.src = URL.createObjectURL(new Blob([buf], { type: ct }));
       img.alt = '';
-      img.onerror = () => { el.classList.add('err'); el.textContent = '?'; log(`ID ${id}: картинка не загрузилась`); };
       el.replaceChildren(img);
-    } else if (type === 'video') {
+    } else if (ct.startsWith('video/')) {
       const v = document.createElement('video');
-      v.src = url;
+      v.src = URL.createObjectURL(new Blob([buf], { type: ct }));
       v.autoplay = v.loop = v.muted = v.playsInline = true;
       el.replaceChildren(v);
       v.play().catch(() => {});
@@ -228,16 +182,7 @@ document.getElementById('go').addEventListener('click', () => {
   render(parseIds(document.getElementById('ids').value));
 });
 
-document.getElementById('saveToken').addEventListener('click', () => {
-  TOKEN = document.getElementById('token').value.trim();
-  try { localStorage.setItem('bot_token', TOKEN); } catch (e) {}
-  document.getElementById('tokenBox').hidden = !!TOKEN;
-  cache.clear();
-  render(parseIds(document.getElementById('ids').value));
-});
-
-// ---- старт ----
-document.getElementById('tokenBox').hidden = !!TOKEN;
+// ID могут прийти из бота через ?ids=1,2,3
 const fromUrl = parseIds(new URLSearchParams(location.search).get('ids') || '');
 document.getElementById('ids').value = fromUrl.join(', ');
 render(fromUrl);
