@@ -120,25 +120,35 @@ const FILE = () => `https://api.telegram.org/file/bot${TOKEN}`;
 // ---- загрузка файла эмодзи (с кэшем, чтобы не качать дважды) ----
 const cache = new Map();
 
+// fetch с подписью шага, чтобы было видно, где именно обрыв
+async function step(name, url) {
+  try { return await fetch(url); }
+  catch (e) { throw new Error(`${name}: ${e.message}`); }
+}
+
 function loadEmoji(id) {
   if (!cache.has(id)) {
     cache.set(id, (async () => {
-      const r = await (await fetch(`${API()}/getCustomEmojiStickers`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ custom_emoji_ids: [id] }),
-      })).json();
+      // GET без заголовков = простой запрос, браузер не шлёт preflight
+      const ids = encodeURIComponent(JSON.stringify([id]));
+      const r = await (await step('getCustomEmojiStickers',
+        `${API()}/getCustomEmojiStickers?custom_emoji_ids=${ids}`)).json();
       const s = r.result && r.result[0];
       if (!s) throw new Error('getCustomEmojiStickers: ' + (r.description || 'пустой ответ'));
 
-      const f = await (await fetch(`${API()}/getFile?file_id=${s.file_id}`)).json();
+      const f = await (await step('getFile',
+        `${API()}/getFile?file_id=${encodeURIComponent(s.file_id)}`)).json();
       if (!f.ok) throw new Error('getFile: ' + f.description);
 
-      const file = await fetch(`${FILE()}/${f.result.file_path}`);
-      if (!file.ok) throw new Error('download: ' + file.status);
-
+      const url = `${FILE()}/${f.result.file_path}`;
       const type = s.is_video ? 'video' : s.is_animated ? 'tgs' : 'image';
-      return { type, buf: await file.arrayBuffer() };
+
+      // webp и webm показываем по прямой ссылке (CORS не нужен), tgs нужно скачать
+      if (type !== 'tgs') return { type, url };
+
+      const file = await step('download', url);
+      if (!file.ok) throw new Error('download: ' + file.status);
+      return { type, url, buf: await file.arrayBuffer() };
     })());
   }
   return cache.get(id);
@@ -146,16 +156,17 @@ function loadEmoji(id) {
 
 async function mountEmoji(el, id) {
   try {
-    const { type, buf } = await loadEmoji(id);
+    const { type, url, buf } = await loadEmoji(id);
 
     if (type === 'image') {
       const img = document.createElement('img');
-      img.src = URL.createObjectURL(new Blob([buf], { type: 'image/webp' }));
+      img.src = url;
       img.alt = '';
+      img.onerror = () => { el.classList.add('err'); el.textContent = '?'; log(`ID ${id}: картинка не загрузилась`); };
       el.replaceChildren(img);
     } else if (type === 'video') {
       const v = document.createElement('video');
-      v.src = URL.createObjectURL(new Blob([buf], { type: 'video/webm' }));
+      v.src = url;
       v.autoplay = v.loop = v.muted = v.playsInline = true;
       el.replaceChildren(v);
       v.play().catch(() => {});
