@@ -71,10 +71,10 @@
 </head>
 <body>
   <h1>Премиум-эмодзи</h1>
-  <p class="sub">Введи ID через запятую или пришли боту сообщение с эмодзи.</p>
+  <p class="sub">Введи ID через запятую или ссылку на набор (t.me/addemoji/...).</p>
 
   <div class="row">
-    <input id="ids" placeholder="5368324170671202286, 5312016608254762256" inputmode="numeric">
+    <input id="ids" placeholder="ID через запятую или t.me/addemoji/...">
     <button id="go">Показать</button>
   </div>
 
@@ -178,14 +178,43 @@ function render(ids) {
   line.append('вот так они выглядят в тексте');
 }
 
+const PACK_LIMIT = 40; // чтобы не грузить сотни анимаций сразу
+
+async function showPack(name) {
+  const r = await fetch(`/pack/${encodeURIComponent(name)}`);
+  if (!r.ok) throw new Error('Набор не найден или это не набор эмодзи: ' + name);
+  const { ids } = await r.json();
+  const shown = ids.slice(0, PACK_LIMIT);
+  render(shown);
+  if (ids.length > shown.length) log(`Показаны первые ${shown.length} из ${ids.length}`);
+}
+
+async function run(str) {
+  try {
+    const m = str.match(/t\.me\/add(?:emoji|stickers)\/(\w+)/i);
+    if (m) await showPack(m[1]);
+    else render(parseIds(str));
+  } catch (e) {
+    logEl.textContent = e.message;
+  }
+}
+
 document.getElementById('go').addEventListener('click', () => {
-  render(parseIds(document.getElementById('ids').value));
+  run(document.getElementById('ids').value);
 });
 
-// ID могут прийти из бота через ?ids=1,2,3
-const fromUrl = parseIds(new URLSearchParams(location.search).get('ids') || '');
-document.getElementById('ids').value = fromUrl.join(', ');
-render(fromUrl);
+// Из бота приходит либо ?ids=1,2,3, либо ?pack=НАЗВАНИЕ
+const qs = new URLSearchParams(location.search);
+const packName = qs.get('pack');
+if (packName) {
+  const link = 't.me/addemoji/' + packName;
+  document.getElementById('ids').value = link;
+  run(link);
+} else {
+  const fromUrl = parseIds(qs.get('ids') || '');
+  document.getElementById('ids').value = fromUrl.join(', ');
+  render(fromUrl);
+}
 </script>
 </body>
 </html>
